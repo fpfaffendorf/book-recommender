@@ -5,6 +5,34 @@ recomendación de 5 libros sobre el tema que elijas. El prompt de ejemplo pide l
 sobre trading cuantitativo para principiantes en 2026. Guarda cada respuesta en SQLite y
 muestra cuáles libros recomienda más y cómo evoluciona la cuenta iteración por iteración.
 
+## Por qué existe
+
+Me pasa seguido que, cuando le pido a una IA recomendaciones de libros, choco con el no
+determinismo: las recomendaciones cambian de una ejecución a otra. Otras veces, revisando la cadena
+de razonamiento (CoT), encuentro que la IA recomienda desde su conocimiento interno, sin investigar
+en internet. Así, las recomendaciones terminan siendo pobres y bastante aleatorias.
+
+Lo que hace esta herramienta, además de darle contexto a la consulta (instrucciones fijas que piden
+libros reales, siempre la misma cantidad y los mismos datos de cada uno), es:
+
+1. **Obligar a investigar en internet en vez de responder de memoria.** Le da a Claude la
+   herramienta de búsqueda web y le indica que busque recomendaciones actuales en fuentes
+   variadas, que compare qué libros se repiten y por qué, y que verifique en editoriales o
+   catálogos el ISBN de cada uno. Cada ejecución guarda cuántas búsquedas hizo, qué fuentes citó y
+   el informe que escribió, así se puede comprobar que investigó. Si responde sin buscar, la
+   ejecución queda marcada con un aviso.
+2. **Convertir el no determinismo en un dato.** En vez de quedarse con una sola respuesta, hace la
+   misma consulta N veces, cada una independiente, y cuenta cuántas veces aparece cada libro. Los
+   libros que aparecen en casi todas las ejecuciones son las recomendaciones sólidas; los que
+   aparecen una sola vez son ruido. Los gráficos muestran el ranking, en qué ejecución apareció cada
+   libro y cómo evoluciona la cuenta a medida que se suman ejecuciones.
+3. **Identificar cada libro sin ambigüedad.** Cada libro se identifica por su ISBN-13, con el
+   dígito verificador validado, y las distintas ediciones de una misma obra se pueden contar
+   juntas. Un ISBN inválido queda marcado, porque suele ser señal de que el dato se inventó.
+4. **Permitir comparar.** Los lotes con y sin búsqueda web se guardan por separado, así podés ver
+   cuánto cambian las recomendaciones cuando la IA investiga y cuando responde de memoria. Todo
+   queda en una base SQLite local para analizarlo después.
+
 ## Instalación
 
 Requiere Python 3.10 o superior (con Tkinter, que viene incluido en Windows).
