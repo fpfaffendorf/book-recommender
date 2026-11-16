@@ -7,8 +7,8 @@ indique el prompt (por ejemplo, trading cuantitativo para principiantes en
 fue recomendado cada libro a lo largo de las iteraciones.
 
 Uso:
-    python book_recommender.py                 # abre la aplicación
-    python book_recommender.py --db otra.db    # usa otra base de datos
+    python book-recommender.py                 # abre la aplicación
+    python book-recommender.py --db otra.db    # usa otra base de datos
 
 Credenciales: el SDK de Anthropic las toma de la variable ANTHROPIC_API_KEY
 (o de un perfil creado con `ant auth login`).

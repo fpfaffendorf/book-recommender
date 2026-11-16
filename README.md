@@ -26,7 +26,7 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ## Uso
 
 ```bash
-python book_recommender.py
+python book-recommender.py
 ```
 
 1. Elegí el modelo (por defecto `claude-opus-5-5`), el esfuerzo, la cantidad de ejecuciones **N**
@@ -109,7 +109,7 @@ y autor.
 ## Base de datos
 
 Por defecto se usa `recomendaciones_libros.db`, en la misma carpeta que el script. Para usar otro
-archivo: `python book_recommender.py --db otra.db`.
+archivo: `python book-recommender.py --db otra.db`.
 
 | Tabla | Contenido |
 |---|---|
