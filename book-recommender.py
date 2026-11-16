@@ -1,10 +1,11 @@
 """
 Recomendador de libros: experimento de variabilidad.
 
-Le pide a Claude N veces la misma recomendación de 5 libros sobre el tema que
-indique el prompt (por ejemplo, trading cuantitativo para principiantes en
-2026), guarda cada respuesta en una base SQLite local y grafica cuántas veces
-fue recomendado cada libro a lo largo de las iteraciones.
+Le pide a Claude N veces la misma recomendación de libros (la cantidad por
+respuesta se elige en la interfaz; 5 por defecto) sobre el tema que indique el
+prompt, por ejemplo trading cuantitativo para principiantes en 2026. Guarda cada
+respuesta en una base SQLite local y grafica cuántas veces fue recomendado cada
+libro a lo largo de las iteraciones.
 
 Uso:
     python book-recommender.py                 # abre la aplicación
@@ -58,54 +59,69 @@ DEFAULT_EFFORT = "medium"
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-sonnet-5-5"}
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 MAX_TOKENS = 16000
-BOOKS_PER_RUN = 5
+DEFAULT_BOOKS_PER_RUN = 5  # libros por respuesta: se elige en la interfaz para cada lote
+MAX_BOOKS_PER_RUN = 20
 MAX_RUNS_PER_BATCH = 500
 MAX_WORKERS = 8
 MAX_TOP_K = 30
 
 # Búsqueda web (herramienta del servidor de Anthropic: cuesta USD 10 cada 1000 búsquedas, más los
 # tokens de los resultados que lee el modelo).
-WEB_SEARCH_MAX_USES = 10  # tope de búsquedas por ejecución
+WEB_SEARCH_MIN_USES = 10  # tope de búsquedas por ejecución; sube con la cantidad de libros
 MAX_CONTINUATIONS = 5  # veces que se reanuda una investigación larga pausada (stop_reason "pause_turn")
 EXTRACTION_EFFORT = "low"  # el paso de extracción solo transcribe el informe
 # Modelos con "filtrado dinámico" de resultados (web_search_20260209); el resto usa la versión básica.
 DYNAMIC_FILTER_MODELS = {"claude-opus-5-5", "claude-sonnet-5-5"}
 
+def _how_many(books_per_run: int) -> str:
+    return "1 libro" if books_per_run == 1 else f"{books_per_run} libros distintos"
+
+
+def web_search_max_uses(books_per_run: int) -> int:
+    """Tope de búsquedas por ejecución: más libros necesitan más búsquedas para verificarlos."""
+    return max(WEB_SEARCH_MIN_USES, 2 * books_per_run)
+
+
 # Instrucciones de formato: las agrega siempre la aplicación como mensaje de sistema, separadas
 # del prompt que edita el usuario. Así, aunque el usuario cambie o borre parte de su prompt, cada
 # respuesta sigue trayendo los datos que la app necesita. Además, la salida estructurada
 # (output_format=BookList) obliga al modelo a respetar el esquema JSON.
-SYSTEM_PROMPT = (
-    "Sos un asesor bibliográfico. Recomendás libros sobre el tema que pida el usuario, "
-    "adecuados al público, al nivel y al idioma que indique.\n"
-    f"Sin importar cómo esté redactado el pedido, respondé con exactamente {BOOKS_PER_RUN} libros "
-    "distintos, solo con el objeto JSON pedido. Reglas para cada libro:\n"
-    "- Tiene que ser un libro real y ya publicado.\n"
-    "- title: el título exacto, tal como figura en la portada de la edición que recomendás.\n"
-    "- author: el autor o los autores, separados por coma.\n"
-    "- isbn13: el ISBN-13 de esa misma edición, con 13 dígitos y sin guiones. Si el pedido indica "
-    "un idioma, elegí una edición en ese idioma; si no, la edición impresa más reciente en el "
-    "idioma original del libro."
-)
+def system_prompt(books_per_run: int) -> str:
+    return (
+        "Sos un asesor bibliográfico. Recomendás libros sobre el tema que pida el usuario, "
+        "adecuados al público, al nivel y al idioma que indique.\n"
+        f"Sin importar cómo esté redactado el pedido, respondé con exactamente {_how_many(books_per_run)}, "
+        "solo con el objeto JSON pedido. Reglas para cada libro:\n"
+        "- Tiene que ser un libro real y ya publicado.\n"
+        "- title: el título exacto, tal como figura en la portada de la edición que recomendás.\n"
+        "- author: el autor o los autores, separados por coma.\n"
+        "- isbn13: el ISBN-13 de esa misma edición, con 13 dígitos y sin guiones. Si el pedido indica "
+        "un idioma, elegí una edición en ese idioma; si no, la edición impresa más reciente en el "
+        "idioma original del libro."
+    )
+
 
 # Con búsqueda web, cada ejecución tiene dos pasos (ver ask_claude):
 # 1) investigación: el modelo busca en internet, analiza y escribe un informe con citas;
 # 2) extracción: otra llamada transcribe el informe al JSON (salida estructurada).
-RESEARCH_SYSTEM_PROMPT = (
-    "Sos un asesor bibliográfico. Recomendás libros sobre el tema que pida el usuario, "
-    "adecuados al público, al nivel y al idioma que indique.\n"
-    "No respondas de memoria: antes de recomendar, investigá en internet con la herramienta de "
-    "búsqueda web. Buscá recomendaciones actuales en fuentes variadas (especialistas, programas de "
-    "cursos, reseñas, listas de lectura, editoriales), compará qué libros se repiten y por qué, y "
-    "analizá cuáles se ajustan mejor al pedido. Verificá en la web (editorial, librería o catálogo "
-    "de biblioteca) que cada libro existe y cuál es el ISBN-13 de la edición que recomendás.\n"
-    f"Terminá con un informe que recomiende exactamente {BOOKS_PER_RUN} libros distintos. Para cada "
-    "uno indicá: el título exacto tal como figura en la portada de esa edición, el autor o los "
-    "autores, el ISBN-13 de esa misma edición (13 dígitos, sin guiones) y una justificación breve "
-    "basada en lo que encontraste. Si el pedido indica un idioma, elegí ediciones en ese idioma; si "
-    "no, la edición impresa más reciente en el idioma original del libro. Si no pudiste verificar "
-    "un ISBN, decilo."
-)
+def research_system_prompt(books_per_run: int) -> str:
+    return (
+        "Sos un asesor bibliográfico. Recomendás libros sobre el tema que pida el usuario, "
+        "adecuados al público, al nivel y al idioma que indique.\n"
+        "No respondas de memoria: antes de recomendar, investigá en internet con la herramienta de "
+        "búsqueda web. Buscá recomendaciones actuales en fuentes variadas (especialistas, programas de "
+        "cursos, reseñas, listas de lectura, editoriales), compará qué libros se repiten y por qué, y "
+        "analizá cuáles se ajustan mejor al pedido. Verificá en la web (editorial, librería o catálogo "
+        "de biblioteca) que cada libro existe y cuál es el ISBN-13 de la edición que recomendás.\n"
+        f"Terminá con un informe que recomiende exactamente {_how_many(books_per_run)}. Para cada "
+        "uno indicá: el título exacto tal como figura en la portada de esa edición, el autor o los "
+        "autores, el ISBN-13 de esa misma edición (13 dígitos, sin guiones) y una justificación breve "
+        "basada en lo que encontraste. Si el pedido indica un idioma, elegí ediciones en ese idioma; si "
+        "no, la edición impresa más reciente en el idioma original del libro. Si no pudiste verificar "
+        "un ISBN, decilo."
+    )
+
+
 EXTRACTION_SYSTEM_PROMPT = (
     "Vas a recibir el informe de una investigación bibliográfica. Extraé los libros que el informe "
     "recomienda, en el mismo orden, copiando título, autor e ISBN-13 tal como aparecen en el "
@@ -114,14 +130,15 @@ EXTRACTION_SYSTEM_PROMPT = (
 )
 
 
-def instructions_for(web_search: bool) -> str:
+def instructions_for(web_search: bool, books_per_run: int) -> str:
     """Instrucciones fijas que agrega la app (se guardan con cada lote)."""
     if web_search:
-        return f"[Investigación]\n{RESEARCH_SYSTEM_PROMPT}\n\n[Extracción]\n{EXTRACTION_SYSTEM_PROMPT}"
-    return SYSTEM_PROMPT
+        return (f"[Investigación]\n{research_system_prompt(books_per_run)}\n\n"
+                f"[Extracción]\n{EXTRACTION_SYSTEM_PROMPT}")
+    return system_prompt(books_per_run)
 
 
-# Prompt editable: solo el pedido en sí; el formato lo pone SYSTEM_PROMPT.
+# Prompt editable: solo el pedido en sí; el formato lo ponen las instrucciones fijas de arriba.
 DEFAULT_PROMPT = (
     "Recomendame libros en inglés sobre trading cuantitativo para principiantes, "
     "para alguien que empieza a estudiar el tema en el año 2026."
@@ -155,7 +172,8 @@ class BookRecommendation(BaseModel):
 
 
 class BookList(BaseModel):
-    books: list[BookRecommendation] = Field(description=f"Exactamente {BOOKS_PER_RUN} libros distintos.")
+    # La cantidad pedida va en el prompt de sistema; el esquema queda fijo (la API lo compila una vez).
+    books: list[BookRecommendation] = Field(description="Los libros recomendados, en orden.")
 
 
 # --------------------------------------------------------------------------
@@ -238,7 +256,8 @@ class NormalizedBook:
     work_key: str
 
 
-def normalize_books(items: list[BookRecommendation]) -> tuple[list[NormalizedBook], list[str]]:
+def normalize_books(items: list[BookRecommendation],
+                    books_per_run: int = DEFAULT_BOOKS_PER_RUN) -> tuple[list[NormalizedBook], list[str]]:
     """Limpia la lista devuelta por el modelo. Devuelve (libros, avisos)."""
     books: list[NormalizedBook] = []
     warnings: list[str] = []
@@ -268,11 +287,11 @@ def normalize_books(items: list[BookRecommendation]) -> tuple[list[NormalizedBoo
                 work_key=work_key(title, author),
             )
         )
-    if len(books) > BOOKS_PER_RUN:
-        warnings.append(f"devolvió {len(books)} libros; se guardan los primeros {BOOKS_PER_RUN}")
-        books = books[:BOOKS_PER_RUN]
-    elif len(books) < BOOKS_PER_RUN:
-        warnings.append(f"devolvió {len(books)} libros en lugar de {BOOKS_PER_RUN}")
+    if len(books) > books_per_run:
+        warnings.append(f"devolvió {len(books)} libros; se guardan los primeros {books_per_run}")
+        books = books[:books_per_run]
+    elif len(books) < books_per_run:
+        warnings.append(f"devolvió {len(books)} libros en lugar de {books_per_run}")
     return books, warnings
 
 
@@ -314,7 +333,7 @@ class _RunFailed(Exception):
 
 
 def ask_claude(client: anthropic.Anthropic, model: str, effort: str, prompt: str,
-               web_search: bool = False) -> RunResult:
+               web_search: bool = False, books_per_run: int = DEFAULT_BOOKS_PER_RUN) -> RunResult:
     """Hace una ejecución completa (sin historial previo) y normaliza la respuesta.
 
     Sin búsqueda web: una sola llamada con salida estructurada (JSON con los libros).
@@ -326,12 +345,13 @@ def ask_claude(client: anthropic.Anthropic, model: str, effort: str, prompt: str
     result = RunResult(started_at=now_iso(), model_requested=model)
     try:
         if web_search:
-            report = _research(client, model, effort, prompt, result)
+            report = _research(client, model, effort, prompt, books_per_run, result)
             parsed = _structured_books(client, model, EXTRACTION_EFFORT, EXTRACTION_SYSTEM_PROMPT,
                                        f"Informe:\n\n{report}", result, "extracción")
         else:
-            parsed = _structured_books(client, model, effort, SYSTEM_PROMPT, prompt, result, "recomendación")
-        result.books, warnings = normalize_books(parsed.books)
+            parsed = _structured_books(client, model, effort, system_prompt(books_per_run), prompt, result,
+                                       "recomendación")
+        result.books, warnings = normalize_books(parsed.books, books_per_run)
         if web_search and result.web_searches == 0:
             warnings.insert(0, "no hizo ninguna búsqueda web: respondió con lo que ya sabía")
         result.warning = "; ".join(warnings) or None
@@ -364,9 +384,9 @@ def _request_kwargs(model: str, effort: str) -> dict:
     return kwargs
 
 
-def web_search_tool(model: str) -> dict:
+def web_search_tool(model: str, books_per_run: int = DEFAULT_BOOKS_PER_RUN) -> dict:
     version = "web_search_20260209" if model in DYNAMIC_FILTER_MODELS else "web_search_20250305"
-    return {"type": version, "name": "web_search", "max_uses": WEB_SEARCH_MAX_USES}
+    return {"type": version, "name": "web_search", "max_uses": web_search_max_uses(books_per_run)}
 
 
 def _fail(result: RunResult, message: str):
@@ -393,15 +413,16 @@ def _check_stop(result: RunResult, response, stage: str) -> None:
         _fail(result, f"La respuesta se cortó por max_tokens ({stage}).")
 
 
-def _research(client, model: str, effort: str, prompt: str, result: RunResult) -> str:
+def _research(client, model: str, effort: str, prompt: str, books_per_run: int, result: RunResult) -> str:
     """Paso 1: Claude investiga en internet y escribe un informe con citas."""
-    tools = [web_search_tool(model)]
+    tools = [web_search_tool(model, books_per_run)]
+    system = research_system_prompt(books_per_run)
     messages: list[dict] = [{"role": "user", "content": prompt}]
     texts: list[str] = []
     sources: dict[str, str] = {}
     for _ in range(MAX_CONTINUATIONS + 1):
         response = client.beta.messages.create(
-            **_request_kwargs(model, effort), system=RESEARCH_SYSTEM_PROMPT, tools=tools, messages=messages,
+            **_request_kwargs(model, effort), system=system, tools=tools, messages=messages,
         )
         _record(result, response)
         _check_stop(result, response, "investigación")
@@ -458,7 +479,8 @@ CREATE TABLE IF NOT EXISTS batches (
     prompt       TEXT    NOT NULL,            -- prompt del usuario
     n_requested  INTEGER NOT NULL,
     system_prompt TEXT,                       -- instrucciones fijas que agregó la app
-    web_search   INTEGER NOT NULL DEFAULT 0   -- 1 si el modelo investigó en internet
+    web_search   INTEGER NOT NULL DEFAULT 0,  -- 1 si el modelo investigó en internet
+    books_per_run INTEGER NOT NULL DEFAULT 5  -- libros pedidos en cada respuesta
 );
 CREATE TABLE IF NOT EXISTS runs (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -534,14 +556,17 @@ class Analysis:
         return len(self.ok_run_ids)
 
 
-# Un "experimento" se identifica por el texto del prompt y por si usó búsqueda web (0/1):
-# así no se mezclan temas distintos ni respuestas de memoria con respuestas investigadas.
-PromptKey = tuple[str, int]
+# Un "experimento" se identifica por el texto del prompt, si usó búsqueda web (0/1) y cuántos libros
+# pidió por respuesta: así no se mezclan temas distintos, respuestas de memoria con respuestas
+# investigadas, ni listas de distinto largo (en una lista de 10 un libro aparece más fácil que en una de 3).
+PromptKey = tuple[str, int, int]
+_KEY_SQL = "b.prompt = ? AND b.web_search = ? AND b.books_per_run = ?"
 
 # Columnas agregadas después de la primera versión: se suman a bases ya existentes.
 MIGRATIONS = [
     ("batches", "system_prompt", "TEXT"),
     ("batches", "web_search", "INTEGER NOT NULL DEFAULT 0"),
+    ("batches", "books_per_run", "INTEGER NOT NULL DEFAULT 5"),  # los lotes anteriores pedían 5
     ("runs", "web_searches", "INTEGER"),
     ("runs", "research_text", "TEXT"),
     ("runs", "sources", "TEXT"),
@@ -574,25 +599,27 @@ class Database:
 
     @staticmethod
     def _run_filter(batch_id: int | None, prompt_key: PromptKey | None) -> tuple[str, tuple]:
-        """Filtro sobre runs (alias r): un lote puntual, o todos los lotes de un mismo prompt y modo."""
+        """Filtro sobre runs (alias r): un lote puntual, o todos los lotes de un mismo experimento."""
         if batch_id:
             return "AND r.batch_id = ?", (batch_id,)
         if prompt_key is not None:
-            return ("AND r.batch_id IN (SELECT id FROM batches WHERE prompt = ? AND web_search = ?)",
-                    tuple(prompt_key))
+            return f"AND r.batch_id IN (SELECT id FROM batches b WHERE {_KEY_SQL})", tuple(prompt_key)
         return "", ()
 
-    def create_batch(self, model: str, effort: str, prompt: str, n: int, web_search: bool = False) -> int:
+    def create_batch(self, model: str, effort: str, prompt: str, n: int, web_search: bool = False,
+                     books_per_run: int = DEFAULT_BOOKS_PER_RUN) -> int:
         with self._conn() as conn:
             cur = conn.execute(
-                """INSERT INTO batches (created_at, model, effort, prompt, n_requested, system_prompt, web_search)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (now_iso(), model, effort, prompt, n, instructions_for(web_search), int(web_search)),
+                """INSERT INTO batches (created_at, model, effort, prompt, n_requested, system_prompt,
+                                        web_search, books_per_run)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (now_iso(), model, effort, prompt, n, instructions_for(web_search, books_per_run),
+                 int(web_search), books_per_run),
             )
             return cur.lastrowid
 
     def list_batches(self, prompt_key: PromptKey | None = None) -> list[sqlite3.Row]:
-        where, params = ("WHERE b.prompt = ? AND b.web_search = ?", tuple(prompt_key)) if prompt_key else ("", ())
+        where, params = (f"WHERE {_KEY_SQL}", tuple(prompt_key)) if prompt_key else ("", ())
         with self._conn() as conn:
             return conn.execute(
                 f"""SELECT b.*, COUNT(r.id) AS n_runs
@@ -603,19 +630,21 @@ class Database:
             ).fetchall()
 
     def list_prompts(self) -> list[sqlite3.Row]:
-        """Combinaciones distintas de prompt y modo (con o sin búsqueda web), de la más reciente a la más vieja."""
+        """Experimentos distintos (prompt, modo, libros por respuesta), del más reciente al más viejo."""
         with self._conn() as conn:
             return conn.execute(
-                """SELECT b.prompt, b.web_search, COUNT(DISTINCT b.id) AS n_batches, COUNT(r.id) AS n_runs,
-                          MAX(b.id) AS last_batch
+                """SELECT b.prompt, b.web_search, b.books_per_run, COUNT(DISTINCT b.id) AS n_batches,
+                          COUNT(r.id) AS n_runs, MAX(b.id) AS last_batch
                    FROM batches b LEFT JOIN runs r ON r.batch_id = b.id
-                   GROUP BY b.prompt, b.web_search ORDER BY last_batch DESC"""
+                   GROUP BY b.prompt, b.web_search, b.books_per_run ORDER BY last_batch DESC"""
             ).fetchall()
 
     def latest_prompt_key(self) -> PromptKey | None:
         with self._conn() as conn:
-            row = conn.execute("SELECT prompt, web_search FROM batches ORDER BY id DESC LIMIT 1").fetchone()
-        return (row["prompt"], row["web_search"]) if row else None
+            row = conn.execute(
+                "SELECT prompt, web_search, books_per_run FROM batches ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return (row["prompt"], row["web_search"], row["books_per_run"]) if row else None
 
     def save_run(self, batch_id: int, result: RunResult) -> int:
         with self._conn() as conn:
@@ -758,10 +787,11 @@ class BatchRunner(threading.Thread):
     """Ejecuta N llamadas (con hasta `workers` en paralelo) y avisa a la interfaz por una cola."""
 
     def __init__(self, *, db, client, batch_id, model, effort, prompt, n, workers, events, cancel,
-                 web_search=False):
+                 web_search=False, books_per_run=DEFAULT_BOOKS_PER_RUN):
         super().__init__(daemon=True, name=f"lote-{batch_id}")
         self.db, self.client, self.batch_id = db, client, batch_id
         self.model, self.effort, self.prompt, self.web_search = model, effort, prompt, web_search
+        self.books_per_run = books_per_run
         self.n, self.workers = n, workers
         self.events: queue.Queue = events
         self.cancel: threading.Event = cancel
@@ -784,7 +814,8 @@ class BatchRunner(threading.Thread):
         if self.cancel.is_set():
             self.events.put(("skipped", None))
             return
-        result = ask_claude(self.client, self.model, self.effort, self.prompt, web_search=self.web_search)
+        result = ask_claude(self.client, self.model, self.effort, self.prompt, web_search=self.web_search,
+                            books_per_run=self.books_per_run)
         run_id = self.db.save_run(self.batch_id, result)
         self.events.put(("run", (run_id, result)))
         if result.fatal:
@@ -1017,6 +1048,7 @@ class App:
         self.effort_var = tk.StringVar(value=DEFAULT_EFFORT)
         self.n_var = tk.StringVar(value="10")
         self.workers_var = tk.StringVar(value="3")
+        self.books_var = tk.StringVar(value=str(DEFAULT_BOOKS_PER_RUN))
         self.web_var = tk.BooleanVar(value=True)
         self.batch_var = tk.StringVar(value=ALL_BATCHES)
         self.prompt_filter_var = tk.StringVar(value=ALL_PROMPTS)
@@ -1044,17 +1076,16 @@ class App:
         ttk.Label(run_bar, text="Esfuerzo").pack(side="left")
         ttk.Combobox(run_bar, textvariable=self.effort_var, values=EFFORTS, width=8, state="readonly").pack(
             side="left", padx=(4, 14))
+        ttk.Label(run_bar, text="Libros por respuesta").pack(side="left")
+        ttk.Spinbox(run_bar, from_=1, to=MAX_BOOKS_PER_RUN, textvariable=self.books_var, width=4).pack(
+            side="left", padx=(4, 14))
         ttk.Label(run_bar, text="Ejecuciones (N)").pack(side="left")
         ttk.Spinbox(run_bar, from_=1, to=MAX_RUNS_PER_BATCH, textvariable=self.n_var, width=6).pack(
             side="left", padx=(4, 14))
         ttk.Label(run_bar, text="En paralelo").pack(side="left")
         ttk.Spinbox(run_bar, from_=1, to=MAX_WORKERS, textvariable=self.workers_var, width=4).pack(
             side="left", padx=(4, 14))
-        self.run_button = ttk.Button(run_bar, text="▶ Ejecutar", command=self.start_batch)
-        self.run_button.pack(side="left")
-        self.cancel_button = ttk.Button(run_bar, text="■ Cancelar", command=self.cancel_batch, state="disabled")
-        self.cancel_button.pack(side="left", padx=(6, 0))
-        ttk.Checkbutton(run_bar, text="Buscar en internet", variable=self.web_var).pack(side="left", padx=(14, 0))
+        ttk.Checkbutton(run_bar, text="Buscar en internet", variable=self.web_var).pack(side="left")
 
         prompt_box = ttk.LabelFrame(self.root, text="Prompt (se envía igual, sin historial, en cada ejecución)",
                                     padding=(8, 4, 8, 8))
@@ -1062,9 +1093,8 @@ class App:
         note = ttk.Frame(prompt_box)
         note.pack(side="bottom", fill="x", pady=(4, 0))
         ttk.Label(note, style="Summary.TLabel",
-                  text="Escribí el tema, el público y el idioma. La aplicación agrega por su cuenta el formato "
-                       f"({BOOKS_PER_RUN} libros con título, autor e ISBN-13) y la instrucción de investigar "
-                       "en internet.").pack(side="left")
+                  text="Escribí el tema, el público y el idioma. La cantidad de libros, el formato y la "
+                       "búsqueda en internet los agrega la aplicación.").pack(side="left")
         ttk.Button(note, text="Ver instrucciones fijas", command=self._show_system_prompt).pack(
             side="left", padx=(8, 0))
         self.prompt_text = tk.Text(prompt_box, height=3, wrap="word", font=("Segoe UI", 10), relief="flat",
@@ -1075,6 +1105,10 @@ class App:
 
         progress_bar = ttk.Frame(self.root, padding=(12, 2, 12, 6))
         progress_bar.pack(fill="x")
+        self.run_button = ttk.Button(progress_bar, text="▶ Ejecutar", command=self.start_batch)
+        self.run_button.pack(side="left")
+        self.cancel_button = ttk.Button(progress_bar, text="■ Cancelar", command=self.cancel_batch, state="disabled")
+        self.cancel_button.pack(side="left", padx=(6, 14))
         self.progress = ttk.Progressbar(progress_bar, mode="determinate", length=320)
         self.progress.pack(side="left")
         ttk.Label(progress_bar, textvariable=self.status_var).pack(side="left", padx=(10, 0))
@@ -1202,13 +1236,14 @@ class App:
         self.prompt_text.insert("1.0", DEFAULT_PROMPT)
 
     def _show_system_prompt(self) -> None:
+        books = self._read_int(self.books_var, 1, MAX_BOOKS_PER_RUN) or DEFAULT_BOOKS_PER_RUN
         if self.web_var.get():
             intro = ("Con «Buscar en internet» cada ejecución hace dos llamadas: la investigación (con búsqueda "
-                     f"web, hasta {WEB_SEARCH_MAX_USES} búsquedas) y la extracción del informe a JSON. "
+                     f"web, hasta {web_search_max_uses(books)} búsquedas) y la extracción del informe a JSON. "
                      "Instrucciones que agrega la aplicación además de tu prompt:")
         else:
             intro = "Instrucciones que la aplicación envía en cada ejecución, además de tu prompt:"
-        messagebox.showinfo(APP_TITLE, f"{intro}\n\n{instructions_for(self.web_var.get())}")
+        messagebox.showinfo(APP_TITLE, f"{intro}\n\n{instructions_for(self.web_var.get(), books)}")
 
     @staticmethod
     def _read_int(var: tk.StringVar, low: int, high: int) -> int | None:
@@ -1225,11 +1260,13 @@ class App:
         model = self.model_var.get().strip()
         n = self._read_int(self.n_var, 1, MAX_RUNS_PER_BATCH)
         workers = self._read_int(self.workers_var, 1, MAX_WORKERS)
+        books_per_run = self._read_int(self.books_var, 1, MAX_BOOKS_PER_RUN)
         if not prompt or not model:
             messagebox.showerror(APP_TITLE, "Completá el modelo y el prompt.")
             return
-        if n is None or workers is None:
-            messagebox.showerror(APP_TITLE, f"N tiene que estar entre 1 y {MAX_RUNS_PER_BATCH}, "
+        if n is None or workers is None or books_per_run is None:
+            messagebox.showerror(APP_TITLE, f"«Libros por respuesta» tiene que estar entre 1 y {MAX_BOOKS_PER_RUN}, "
+                                            f"N entre 1 y {MAX_RUNS_PER_BATCH} "
                                             f"y «En paralelo» entre 1 y {MAX_WORKERS}.")
             return
         if self.client is None:
@@ -1241,9 +1278,10 @@ class App:
                 return
 
         web_search = self.web_var.get()
-        batch_id = self.db.create_batch(model, self.effort_var.get(), prompt, n, web_search=web_search)
-        # Mostrar lo acumulado para este prompt y modo (incluye lotes anteriores iguales).
-        self.selected_prompt, self.selected_batch = (prompt, int(web_search)), None
+        batch_id = self.db.create_batch(model, self.effort_var.get(), prompt, n, web_search=web_search,
+                                        books_per_run=books_per_run)
+        # Mostrar lo acumulado para este experimento (incluye lotes anteriores iguales).
+        self.selected_prompt, self.selected_batch = (prompt, int(web_search), books_per_run), None
         self.cancel_event = threading.Event()
         self._fatal_message = None
         self._progress = {"done": 0, "ok": 0, "error": 0, "n": n, "batch": batch_id}
@@ -1253,7 +1291,7 @@ class App:
         self.runner = BatchRunner(
             db=self.db, client=self.client, batch_id=batch_id, model=model, effort=self.effort_var.get(),
             prompt=prompt, n=n, workers=workers, events=self.events, cancel=self.cancel_event,
-            web_search=web_search,
+            web_search=web_search, books_per_run=books_per_run,
         )
         self.runner.start()
         self.refresh_all()
@@ -1331,11 +1369,12 @@ class App:
             text = " ".join(p["prompt"].split())
             text = text if len(text) <= 110 else text[:109] + "…"
             mode = "con búsqueda web" if p["web_search"] else "sin búsqueda web"
+            books = f"{p['books_per_run']} libro{'s' if p['books_per_run'] != 1 else ''} por respuesta"
             batches = f"{p['n_batches']} lote{'s' if p['n_batches'] != 1 else ''}"
-            label = f"«{text}» · {mode} · {batches} · {p['n_runs']} ejec."
+            label = f"«{text}» · {mode} · {books} · {batches} · {p['n_runs']} ejec."
             if label in self.prompt_options:  # dos prompts que se ven iguales al recortarlos
                 label += f" · último lote {p['last_batch']}"
-            self.prompt_options[label] = (p["prompt"], p["web_search"])
+            self.prompt_options[label] = (p["prompt"], p["web_search"], p["books_per_run"])
         if self.selected_prompt not in self.prompt_options.values():
             self.selected_prompt = None
         self.prompt_combo.configure(values=list(self.prompt_options))

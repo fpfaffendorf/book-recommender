@@ -1,7 +1,8 @@
 # Recomendaciones de libros
 
 Aplicación de escritorio (Tkinter + matplotlib) que le pide a Claude **N veces** la misma
-recomendación de 5 libros sobre el tema que elijas. El prompt de ejemplo pide libros en inglés
+recomendación de libros sobre el tema que elijas, con la cantidad de libros por respuesta que
+indiques (5 por defecto). El prompt de ejemplo pide libros en inglés
 sobre trading cuantitativo para principiantes en 2026. Guarda cada respuesta en SQLite y
 muestra cuáles libros recomienda más y cómo evoluciona la cuenta iteración por iteración.
 
@@ -13,7 +14,7 @@ de razonamiento (CoT), encuentro que la IA recomienda desde su conocimiento inte
 en internet. Así, las recomendaciones terminan siendo pobres y bastante aleatorias.
 
 Lo que hace esta herramienta, además de darle contexto a la consulta (instrucciones fijas que piden
-libros reales, siempre la misma cantidad y los mismos datos de cada uno), es:
+libros reales, la cantidad que elijas y los mismos datos de cada uno), es:
 
 1. **Obligar a investigar en internet en vez de responder de memoria.** Le da a Claude la
    herramienta de búsqueda web y le indica que busque recomendaciones actuales en fuentes
@@ -57,13 +58,15 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 python book-recommender.py
 ```
 
-1. Elegí el modelo (por defecto `claude-opus-5-5`), el esfuerzo, la cantidad de ejecuciones **N**
-   y cuántas llamadas en paralelo hacer.
+1. Elegí el modelo (por defecto `claude-opus-5-5`), el esfuerzo, cuántos **libros por respuesta**
+   querés (de 1 a 20; 5 por defecto), la cantidad de ejecuciones **N** y cuántas llamadas en
+   paralelo hacer. Según el tema, 5 libros pueden ser muchos o pocos.
 2. Escribí en el prompt qué libros querés: el tema, el público, el nivel y, si te importa, el idioma.
    Por ejemplo: *"Recomendame libros de divulgación sobre astronomía para adolescentes, en español"*.
    El botón *Restaurar* vuelve al prompt de ejemplo. Después apretá **Ejecutar**.
-   El prompt solo contiene el pedido. Las instrucciones de formato (5 libros con título, autor e
-   ISBN-13) las agrega la aplicación en cada llamada, en un mensaje de sistema separado, así que
+   El prompt solo contiene el pedido. Las instrucciones de formato (la cantidad de libros elegida,
+   con título, autor e ISBN-13) las agrega la aplicación en cada llamada, en un mensaje de sistema
+   separado, así que no hace falta escribir la cantidad en el prompt y
    editar o borrar partes del prompt no rompe la respuesta. Para verlas, usá el botón
    *Ver instrucciones fijas*.
 3. Cada ejecución es independiente, sin historial. Las respuestas se guardan a medida que llegan
@@ -74,9 +77,10 @@ python book-recommender.py
 Con **Buscar en internet** activado (la opción por defecto), Claude no responde de memoria. Cada
 ejecución tiene dos pasos:
 
-1. **Investigación.** Claude usa la herramienta de búsqueda web de Anthropic (hasta 10 búsquedas
-   por ejecución): busca recomendaciones y reseñas actuales, compara las fuentes, verifica los ISBN
-   y escribe un informe con citas.
+1. **Investigación.** Claude usa la herramienta de búsqueda web de Anthropic: busca
+   recomendaciones y reseñas actuales, compara las fuentes, verifica los ISBN y escribe un informe
+   con citas. El tope es de 10 búsquedas por ejecución, o el doble de los libros pedidos si eso da
+   más (por ejemplo, 20 búsquedas para 10 libros), porque cada libro necesita verificarse.
 2. **Extracción.** Una segunda llamada pasa ese informe a JSON (título, autor e ISBN-13), sin
    agregar datos que el informe no tenga.
 
@@ -113,11 +117,13 @@ tres pestañas.
 
 ### Varios temas en la misma base
 
-Los resultados se agrupan **por prompt y modo**. *Prompt analizado* muestra juntos todos los lotes
-que usaron exactamente el mismo texto y el mismo modo (con o sin búsqueda web). Así no se mezclan
-los libros de distintos temas, ni las respuestas investigadas con las respuestas de memoria. Al
-ejecutar un lote, ese filtro pasa al prompt que acabás de usar. Para acumular iteraciones sobre un
-mismo tema, ejecutá varias veces el mismo texto, sin cambiarlo. Con *Lote* podés ver un lote
+Los resultados se agrupan **por experimento**. *Prompt analizado* muestra juntos todos los lotes
+que usaron exactamente el mismo texto, el mismo modo (con o sin búsqueda web) y la misma cantidad de
+libros por respuesta. Así no se mezclan los libros de distintos temas, ni las respuestas
+investigadas con las de memoria, ni listas de distinto largo: en una lista de 10 libros es más
+fácil aparecer que en una de 3. Al ejecutar un lote, ese filtro pasa al experimento que acabás de
+correr. Para acumular iteraciones sobre un mismo tema, ejecutá varias veces el mismo texto con la
+misma configuración. Con *Lote* podés ver un lote
 puntual, y *Todos los prompts* junta todo, aunque mezcle temas.
 
 ### Contar por obra o por ISBN
@@ -141,7 +147,7 @@ archivo: `python book-recommender.py --db otra.db`.
 
 | Tabla | Contenido |
 |---|---|
-| `batches` | cada lote de N ejecuciones: modelo, esfuerzo, prompt del usuario, instrucciones fijas que agregó la app (`system_prompt`), si usó búsqueda web (`web_search`), N pedido |
+| `batches` | cada lote de N ejecuciones: modelo, esfuerzo, prompt del usuario, instrucciones fijas que agregó la app (`system_prompt`), si usó búsqueda web (`web_search`), libros por respuesta (`books_per_run`), N pedido |
 | `runs` | cada ejecución: estado, error o avisos, JSON con los libros (`raw_response`), tokens, modelo que respondió y, con búsqueda web, cantidad de búsquedas, informe (`research_text`) y fuentes citadas (`sources`, JSON) |
 | `books` | un registro por libro (clave: ISBN-13 válido), con su `work_key` de obra |
 | `recommendations` | qué libros devolvió cada ejecución y en qué posición, tal como los escribió el modelo |
